@@ -1,0 +1,97 @@
+cabal-version:      2.4
+name:               matchmaker-prototype
+version:            0.1.0.0
+
+-- A short (one-line) description of the package.
+-- synopsis:
+
+-- A longer description of the package.
+-- description:
+
+-- A URL where users can report bugs.
+-- bug-reports:
+
+-- The license under which the package is released.
+-- license:
+author:             reeshav
+maintainer:         reeshav99acharya@gmail.com
+
+-- A copyright notice.
+-- copyright:
+-- category:
+extra-source-files: CHANGELOG.md
+
+executable matchmaker-prototype
+    main-is:          Main.hs
+
+    -- Modules included in this executable, other than Main.
+    other-modules:  Types
+                    OrderUtils
+                    PoolUtils
+                    MatchUtils
+                    GeneralUtils
+                    TransactionMaker
+    -- LANGUAGE extensions used by modules in this package.
+    -- other-extensions:
+    build-depends:    base >=4.7 && <5
+                , kuber
+                , cardano-api
+                , bytestring
+                , text
+                , containers
+                , aeson
+                , plutus-ledger-api 
+                , plutus-tx
+                , unordered-containers
+                , filepath
+                , directory
+                , serialise
+                , cmdargs >= 0.10.18
+                , http-types
+                , http-media
+                , text-conversions
+                , cardano-ledger-shelley
+                , cardano-ledger-core
+                , cardano-ledger-shelley-ma
+                , cardano-ledger-alonzo
+                , cardano-ledger-babbage
+                , cardano-crypto-class
+                , servant >=0.18 && <0.20
+                , servant-server
+                , servant-exceptions
+                , servant-client-core
+                , wai
+                , servant-exceptions-server
+                , lucid
+                , warp
+                , cborg
+                , cardano-binary
+                , mtl
+                , vector
+                , prettyprinter
+                , wai-extra
+                , wai-cors
+                , wai-middleware-static
+                , plutus-tx-plugin
+                , cardano-api 
+                , base-compat-batteries
+                , string-conversions
+                , blaze-markup
+                , blaze-html
+                , Crypto
+                , plutus-core
+                , data-default
+                , directory
+                , blockfrost-client 
+                , blockfrost-api
+                , blockfrost-client-core 
+                , cardano-crypto
+                , QuickCheck
+                , tasty
+                , generic-arbitrary
+                , http-client
+                , http-client-tls
+                , http-conduit >= 2.3.2
+                , safe-money
+    hs-source-dirs:   app
+    default-language: Haskell2010
