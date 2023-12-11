@@ -19,11 +19,14 @@ import qualified Data.Aeson as A
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as BL
+import Data.List (intercalate)
 import qualified Data.Map as Map
 import qualified Data.Set.Internal as Set
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
+import qualified Debug.Trace as Debug
 import GHC.IO
+import GeneralUtils (parseToPlutusTxId)
 import Money (Discrete, Discrete', someDiscreteAmount, someDiscreteCurrency)
 import Network.HTTP.Client
 import qualified Network.HTTP.Client as HTTP
@@ -35,7 +38,6 @@ import qualified Plutus.V1.Ledger.Api as Plutus
 import Plutus.V1.Ledger.Value (AssetClass, CurrencySymbol (CurrencySymbol), TokenName (TokenName), Value, adaSymbol, adaToken, assetClass, assetClassValue)
 import PlutusTx.Prelude (BuiltinData, toBuiltin)
 import Types (OrderDatum (odStep), OrderMatcher (OrderMatcher), OrderStep (..), unDatumResponse)
-import GeneralUtils (parseTxId)
 
 parseAddressFromString :: String -> AddressInEra BabbageEra
 parseAddressFromString str = case parseAddressBech32 $ T.pack str of
@@ -44,13 +46,15 @@ parseAddressFromString str = case parseAddressBech32 $ T.pack str of
 
 orderContractAddress = parseAddressFromString "addr_test1wpn3aekk4atzzmfgwck2jh57nxtxv659gpx55n54f8m5qqc8wl0qd"
 
+orderContractAddressMainnet = parseAddressFromString "addr1zxn9efv2f6w82hagxqtn62ju4m293tqvw0uhmdl64ch8uw6j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pq6s3z70"
+
 orderAddressInfo :: MonadBlockfrost m => m [AddressUtxo]
 orderAddressInfo = do
-  getAddressUtxos (Address (T.pack "addr_test1wpn3aekk4atzzmfgwck2jh57nxtxv659gpx55n54f8m5qqc8wl0qd"))
+  getAddressUtxos (Address (T.pack "addr1zxn9efv2f6w82hagxqtn62ju4m293tqvw0uhmdl64ch8uw6j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pq6s3z70"))
 
 -- https://cardano-mainnet.blockfrost.io/api/v0/scripts/datum/{datum_hash}
-parsedDatumInline :: (MonadBlockfrost m) => m [OrderMatcher]
-parsedDatumInline = do
+generateOrderMatcher :: (MonadBlockfrost m) => m [OrderMatcher]
+generateOrderMatcher = do
   addressUtxos <- orderAddressInfo
   let datums =
         foldr
@@ -61,15 +65,16 @@ parsedDatumInline = do
                   DatumHash txt -> (mconcat $ amountToValue ams, datumHashToInlineDatumSync (T.unpack txt), txHashtoTxOut th n) : acc
           )
           []
-          addressUtxos
-  return $
-    foldr
-      ( \(va, bs, th) acc -> case getOrderDatum bs of
-          Nothing -> acc
-          Just od -> OrderMatcher od va (case th of TxOutRef ti n -> (parseTxId ti, n)) : acc
-      )
-      []
-      datums
+          addressUtxos          
+  let result =
+        foldr
+          ( \(va, bs, th) acc -> case getOrderDatum bs of
+              Nothing -> acc
+              Just od -> OrderMatcher od va (case th of TxOutRef ti n -> (parseToPlutusTxId ti, n)) : acc
+          )
+          []
+          datums
+  return result
 
 txHashtoTxOut :: TxHash -> Integer -> Plutus.TxOutRef
 txHashtoTxOut txHash index = case txHash of
@@ -111,9 +116,9 @@ getOrderDatum bs = case A.decode bs of
 datumHashToInlineDatum :: String -> IO BL.ByteString
 datumHashToInlineDatum dh = do
   manager <- newTlsManager
-  let url = "https://cardano-preview.blockfrost.io/api/v0/scripts/datum/" ++ dh
+  let url = "https://cardano-mainnet.blockfrost.io/api/v0/scripts/datum/" ++ dh
   request <- HTTP.parseRequest url
-  let requestWithHeader = setRequestHeaders [("project_id", "previewomThdKboNJjeb7TOIizKtBpEsTqDpfQH")] request
+  let requestWithHeader = setRequestHeaders [("project_id", "mainnetL3IaaLMp0E1IUTODLZc9bZvhTg5CHDg4")] request
   response <- httpLbs requestWithHeader manager
   return $ HTTP.responseBody response
 

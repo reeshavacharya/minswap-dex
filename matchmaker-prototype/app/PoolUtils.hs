@@ -1,5 +1,8 @@
 -- ADA-AGIX pool: addr1z8snz7c4974vzdpxu65ruphl3zjdvtxw8strf2c2tmqnxzfgf0jgfz5xdvg2pges20usxhw8zwnkggheqrxwmxd6huuqss46eh
 -- addr1z8snz7c4974vzdpxu65ruphl3zjdvtxw8strf2c2tmqnxzfpahn0eymy6pz4yr4mvptlpjv9eh2swz0u0hjj4qp439kq4064e4 -- JPG POOL
+-- addr_test1zzwnfaaf2cpt8ex2dytntusthpxc2f3xplqdp7y9fqy5666j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pqd0m23a
+-- addr_test1zqf5dxz2jma5a8vpyvxa4v4qq67xp2kzkhmgeud3j4ul8ujj2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pqcscau3
+-- addr1z8snz7c4974vzdpxu65ruphl3zjdvtxw8strf2c2tmqnxz2j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pq0xmsha -- main pool
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -17,18 +20,19 @@ import Plutus.V1.Ledger.Value
 import qualified Plutus.V1.Ledger.Value as Value
 import Types
 import GeneralUtils
+import qualified Debug.Trace as Debug
 
 poolAddressInfo :: MonadBlockfrost m => m [AddressUtxo]
 poolAddressInfo = do
-  getAddressUtxos (Blockfrost.Types.Address (T.pack "addr_test1zqf5dxz2jma5a8vpyvxa4v4qq67xp2kzkhmgeud3j4ul8ujj2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pqcscau3"))
+  getAddressUtxos (Blockfrost.Types.Address (T.pack "addr1z8snz7c4974vzdpxu65ruphl3zjdvtxw8strf2c2tmqnxz2j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pq0xmsha"))
 
-minswapPolicy :: CurrencySymbol
-minswapPolicy = "aef680e98237d089f5ed465298065536aab01b2a92c813f590f91b58"
+minswapFactoryPolicy :: CurrencySymbol
+minswapFactoryPolicy = "13aa2accf2e1561723aa26871e071fdf32c867cff7e7d50ad470d62f"
 
-minswapTokenName :: TokenName
-minswapTokenName = "MINSWAP"
+minswapFactoryTokenName :: TokenName
+minswapFactoryTokenName = "MINSWAP"
 
-poolToken = assetClass minswapPolicy minswapTokenName
+poolFactoryToken = assetClass minswapFactoryPolicy minswapFactoryTokenName
 
 amountToAssetClass :: [Amount] -> [AssetClass]
 amountToAssetClass =
@@ -53,13 +57,13 @@ getUtxosWithPoolTokens = do
                   Blockfrost.Types.DatumHash txt -> (txHashtoTxOut th n, datumHashToInlineDatumSync (T.unpack txt), mconcat (amountToValue ams)) : acc
           )
           []
-          (filterUtxosWithAssets poolToken addressUtxos)
+          (filterUtxosWithAssets poolFactoryToken addressUtxos)
   return $
     foldr
       ( \x acc -> case x of
           (th, bs, val) -> case getPoolDatum bs of
             Nothing -> acc
-            Just pd -> PoolMatcher pd val (case th of TxOutRef ti n -> (parseTxId ti, n)) : acc
+            Just pd -> PoolMatcher pd val (case th of TxOutRef ti n -> (parseToPlutusTxId ti, n)) : acc
       )
       []
       txHashAnddatum
@@ -101,28 +105,6 @@ filterUtxosWithAssets ac =
             else acc
     )
     []
-
--- getPoolCoinPair :: MonadBlockfrost m => m [PoolCoinContent]
--- getPoolCoinPair = do
---   foldr
---     ( \x acc -> case x of
---         (th, pd', val) ->
---           if (pdCoinA pd' `elem` flattenedValue val) && (pdCoinB pd' `elem` flattenedValue val)
---             then
---               PoolCoinContent
---                 (pdCoinA pd')
---                 (findQuantity val (pdCoinA pd'))
---                 (pdCoinB pd')
---                 (findQuantity val (pdCoinB pd'))
---                 th :
---               acc
---             else acc
---     )
---     []
---     <$> getUtxosWithPoolTokens
---   where
---     flattenedValue v = map (\(cs, tn, int) -> assetClass cs tn) (Value.flattenValue v)
---     findQuantity val ac = assetClassValueOf val ac
 
 getPoolDatum :: BL.ByteString -> Maybe PoolDatum
 getPoolDatum bs = case A.decode bs of

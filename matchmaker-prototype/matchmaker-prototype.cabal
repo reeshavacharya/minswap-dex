@@ -1,4 +1,4 @@
-cabal-version:      2.4
+cabal-version:      3.0
 name:               matchmaker-prototype
 version:            0.1.0.0
 
@@ -93,5 +93,12 @@ executable matchmaker-prototype
                 , http-client-tls
                 , http-conduit >= 2.3.2
                 , safe-money
+                , hedgehog
+                , containers
+                , tasty
+                , tasty-hunit
+                , base16
+                , cardano-api:gen
+                , time
     hs-source-dirs:   app
     default-language: Haskell2010

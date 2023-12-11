@@ -44,12 +44,16 @@ import qualified Prelude
 data Match = Match
   { mOffered :: (AssetClass, Integer),
     mOfferedUtxo :: (String, Integer),
-    mDesired :: (AssetClass, Integer),
-    mDesiredUtxo :: (String, Integer),
-    mSender :: Plutus.Address,
-    mReceiver :: Plutus.Address,
-    mOrderDatum :: OrderDatum,
-    mPoolDatum :: PoolDatum
+    mPoolMatches :: [PoolMatches]
+  }
+  deriving (Show)
+
+data PoolMatches = PoolMatches
+  { pmmDesired :: (AssetClass, Integer),
+    pmmOffered :: (AssetClass, Integer),
+    pmmDesiredUtxo :: (String, Integer),
+    pmmDatum :: PoolDatum,
+    pmmValue :: Plutus.V1.Ledger.Value.Value 
   }
   deriving (Show)
 
@@ -87,7 +91,7 @@ data OrderStep
 data OrderMatcher = OrderMatcher
   { omOrderDatum :: OrderDatum,
     omOfferedAmount :: Plutus.V1.Ledger.Value.Value,
-    orderUtxo :: (String, Integer)
+    omOrderUtxo :: (String, Integer)
   }
   deriving (Show)
 
@@ -156,6 +160,25 @@ PlutusTx.makeIsDataIndexed
     ('CancelOrder, 1)
   ]
 PlutusTx.makeLift ''OrderRedeemer
+
+data PoolRedeemer
+  = ApplyPool
+      { apBatcherAddress :: Plutus.Address,
+        apLicenseIndex :: Integer
+      }
+  | UpdateFeeTo
+      { uftOwnerIndex :: Integer
+      }
+  | WithdrawLiquidityShare
+      { wlsOwnerIndex :: Integer,
+        wlsFeeToIndex :: Integer
+      }
+  deriving (Show)
+
+PlutusTx.makeIsDataIndexed
+  ''PoolRedeemer
+  [('ApplyPool, 0), ('UpdateFeeTo, 1), ('WithdrawLiquidityShare, 2)]
+PlutusTx.makeLift ''PoolRedeemer
 
 -- FromData Instances
 unDatumResponse (ApiDatumResponse a) = a

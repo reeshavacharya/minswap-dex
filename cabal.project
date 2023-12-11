@@ -100,7 +100,7 @@ source-repository-package
 source-repository-package
   type: git
   location: https://github.com/dquadrant/kuber
-  tag: 6c76ec56c41ea9ad6f7aa27773a0da28fc722065
+  tag: bc5a1ca78db36589ae65784cbfc4796b702e4b71
 
 source-repository-package
   type: git
