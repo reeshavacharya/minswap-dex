@@ -1,8 +1,9 @@
+{-# LANGUAGE BlockArguments #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Main where
 
-import Cardano.Api (AssetId (AdaAssetId), NetworkId (Testnet), NetworkMagic (NetworkMagic), SerialiseAddress (serialiseAddress), prettyPrintJSON, renderValue, valueFromList)
+import Cardano.Api (AssetId (AdaAssetId), NetworkId (Testnet), NetworkMagic (NetworkMagic), SerialiseAddress (serialiseAddress), UTxO (UTxO), getTxBody, getTxId, prettyPrintJSON, renderValue, valueFromList)
 import Cardano.Kuber.Api
 import Cardano.Kuber.Console.ConsoleWritable (ConsoleWritable (toConsoleText, toConsoleTextNoPrefix))
 import Cardano.Kuber.Util (addressInEraToAddressAny, fromPlutusAddress)
@@ -11,9 +12,12 @@ import qualified Data.Aeson as A
 import qualified Data.ByteString.Char8 as BS8
 import Data.Functor ((<&>))
 import Data.List (intercalate)
+import qualified Data.Map as Map
 import Data.Maybe (fromJust, isNothing, mapMaybe)
 import qualified Data.Set as Set
 import qualified Data.Text as T
+import Data.Time.Clock
+import Data.Time.Clock.POSIX
 import qualified Debug.Trace as Debug
 import GeneralUtils
 import Hedgehog.Gen (sample)
@@ -24,30 +28,6 @@ import PlutusTx.Prelude (divide, isJust, traceError)
 import PoolUtils
 import TransactionMaker
 import Types
-
-calculateInitialLiquidity :: Integer -> Integer -> Integer
-calculateInitialLiquidity outA outB =
-  let p = outA * outB
-      sqrt = calSqrt p
-   in if sqrt * sqrt < p
-        then sqrt + 1
-        else sqrt
-
-calSqrt :: Integer -> Integer
-calSqrt x
-  | x < 0 = traceError "negative square root condition from factory token contract"
-  | x == 0 = 0
-  | x == 1 = 1
-  | x == 2 = 1
-  | otherwise = go x (x `divide` 2 + 1)
-  where
-    go :: Integer -> Integer -> Integer
-    go i1 i2 =
-      if i2 < i1
-        then go i2 ((x `divide` i2 + i2) `divide` 2)
-        else i1
-
--- main = print $ calculateInitialLiquidity 60000000 60
 
 showMatches :: PoolMatches -> IO ()
 showMatches matches = do
@@ -79,35 +59,38 @@ remoteKuberConnection = do
   (networkName, network) <- getNetworkFromEnv "NETWORK"
   createRemoteKuberConnection network "http://172.31.6.14:8081/" Nothing
 
-filerNoProfitSharing :: [PoolMatcher] -> [PoolMatcher]
-filerNoProfitSharing = mapMaybe (\(PoolMatcher pd va x1) -> case pd of PoolDatum ac ac' n i m_ps -> if isNothing m_ps then Just (PoolMatcher pd va x1) else Nothing)
-
+main :: IO ()
 main = do
   let order = dummyOrderMatcher
   chainInfo <- remoteKuberConnection
   poolMatcher <- getUtxosWithPoolTokens
-  pool <- makeMatchesForSEIOrders order poolMatcher
+  time <- getTime
+  matchingPool <- makeMatchesForSEIOrders order poolMatcher
+  let pool = if null matchingPool then error "No matches exist for your order" else head matchingPool
   poolScrpt <- poolScript
   orderScrpt <- orderScript
-  -- Debug.traceM (show pool)
-  tx <- sample $ makeSeiTx order orderScrpt (head pool) poolScrpt
+  queryBatcher <- evaluateKontract chainInfo do getbatcherUtxo'
+  batcherUtxo <- case queryBatcher of
+    Left fe -> error "no valid batcher utxo to consume"
+    Right uto -> case uto of UTxO map -> pure $ head $ Map.toList map
+  tx <- makeSeiTx order orderScrpt pool poolScrpt time batcherUtxo
   Debug.traceM (BS8.unpack $ prettyPrintJSON tx)
   result <- evaluateKontract chainInfo $ kBuildAndSubmit tx
+  putStrLn "\n\n\n"
   case result of
     Left fe -> print $ show fe
-    Right tx' -> print "pass"
+    Right tx' -> print $ getTxId $ getTxBody tx'
 
--- main = print $ show (getAmountOut 696672625 149498 14000000)
+-- for viewing matches for `dummyOrderMatcher`
 -- main :: IO ()
 -- main = do
---   -- odMatcher <- generateOrderMatcher
+--   -- odMatcher <- generateOrderMatcher -- query SEI orders from order contract
 --   let odMatcher = [dummyOrderMatcher]
 --   putStrLn "\n ---------------------------------------------------------------------------------------------------------------------------------- \n"
 --   putStrLn $ "Order:  \n"
 --   mapM_ showOrders (seiOrderMatchers odMatcher)
 --   pMatcher <- getUtxosWithPoolTokens
 --   putStrLn "\n ---------------------------------------------------------------------------------------------------------------------------------- \n"
---   -- print $ show (filerNoProfitSharing pMatcher)
 --   matches <- makeMatchesForSEIOrders (head odMatcher) pMatcher
 --   putStrLn $ "Matches:  \n"
 --   mapM_ showMatches matches

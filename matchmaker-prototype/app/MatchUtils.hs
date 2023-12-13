@@ -63,7 +63,6 @@ makeMatchesForSEIOrders orderMatcher poolMatcherList = do
           approxDesiredCoinAmountAndPoolMatches
   return result
 
--- validatePool :: [PoolMatcher] -> [PoolMatcher]
 validatePool :: [PoolMatcher] -> [PoolMatcher]
 validatePool =
   mapMaybe

@@ -12,15 +12,16 @@ import Blockfrost.Client
 import Blockfrost.Types
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy as BL
+import Data.Maybe (isNothing, mapMaybe)
 import qualified Data.Text as T
+import qualified Debug.Trace as Debug
+import GeneralUtils
 import Money
 import OrderUtils
 import Plutus.V1.Ledger.Api
 import Plutus.V1.Ledger.Value
 import qualified Plutus.V1.Ledger.Value as Value
 import Types
-import GeneralUtils
-import qualified Debug.Trace as Debug
 
 poolAddressInfo :: MonadBlockfrost m => m [AddressUtxo]
 poolAddressInfo = do
@@ -32,6 +33,7 @@ minswapFactoryPolicy = "13aa2accf2e1561723aa26871e071fdf32c867cff7e7d50ad470d62f
 minswapFactoryTokenName :: TokenName
 minswapFactoryTokenName = "MINSWAP"
 
+poolFactoryToken :: AssetClass
 poolFactoryToken = assetClass minswapFactoryPolicy minswapFactoryTokenName
 
 amountToAssetClass :: [Amount] -> [AssetClass]
@@ -110,3 +112,6 @@ getPoolDatum :: BL.ByteString -> Maybe PoolDatum
 getPoolDatum bs = case A.decode bs of
   Nothing -> Nothing
   Just any -> pure $ unDatumResponse any
+
+filerNoProfitSharing :: [PoolMatcher] -> [PoolMatcher]
+filerNoProfitSharing = mapMaybe (\(PoolMatcher pd va x1) -> case pd of PoolDatum ac ac' n i m_ps -> if isNothing m_ps then Just (PoolMatcher pd va x1) else Nothing)

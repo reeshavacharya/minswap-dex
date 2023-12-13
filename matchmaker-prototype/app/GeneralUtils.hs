@@ -37,6 +37,10 @@ import Plutus.V1.Ledger.Value (AssetClass (AssetClass), CurrencySymbol (Currency
 import Plutus.V2.Ledger.Api (Credential (..), ValidatorHash (..))
 import qualified Plutus.V2.Ledger.Api as Plutus
 import qualified Plutus.V2.Ledger.Tx as Plutus
+import PlutusTx.Prelude (divide)
+import PlutusTx.Builtins (BuiltinByteString, lengthOfByteString, indexByteString)
+import Data.Time (getCurrentTime, addUTCTime)
+import Data.Time.Clock.POSIX
 
 parseToPlutusTxId :: Plutus.TxId -> [Char]
 parseToPlutusTxId txid = case txid of Plutus.TxId bbs -> BS8.unpack $ fromBuiltin bbs
@@ -96,13 +100,10 @@ scriptCBOR plutusAddress = getScriptCBOR (ScriptHash $ cborTextFromAddress plutu
 eitherScript :: (MonadBlockfrost m, MonadFail m) => Plutus.Address -> m (CApi.Script PlutusScriptV1)
 eitherScript plutusAddress = do
   scriptCborBS <- scriptBS plutusAddress
-  -- Debug.traceM (BS8.unpack scriptCborBS)
-  Debug.traceM ("\n\n\n")
   unhexed <- case unHexLazy (T.decodeUtf8 scriptCborBS) of
     Nothing -> fail "UNEXPECTED: failed to decode cbor."
     Just bs -> pure bs
   let encodedCbor = toStrictByteString $ encodeBytes $ scriptCborBS
-  -- Debug.traceM (toHexString encodedCbor)
   pure $ PlutusScript PlutusScriptV1 $ PlutusScriptSerialised $ SBS.toShort (toStrict unhexed)
 
 scriptBS plutusAddress = do
@@ -130,40 +131,36 @@ valueIn currencySymbol value =
       )
       (flattenValue value)
 
-batcher = parseToAddressInEra "addr1qydzppfxwjnp8zqq5py65azlh07ydf8f72j2p6ptfzvh6uhee858y3kj7qmn3pvfdtfgqjmj99nnypx2eysgx3wpafdsjcs99a"
+-- 916730 47940671942 1346
+getAmountOut :: Integer -> Integer -> Integer -> Integer
+getAmountOut reserveA reserveB inA =
+  let inAWithFee = inA * 997
+      numerator = inAWithFee * reserveB
+      denominator = reserveA * 1000 + inAWithFee
+      outB = numerator `divide` denominator
+   in outB
+-- 1346 916730 47940671942
+calculateSwapExactIn :: Integer -> Integer -> Integer -> (Integer, Integer)
+calculateSwapExactIn amountIn reserveIn reserveOut =
+  let amountIn' = amountIn
+      reserveIn' = reserveIn
+      reserveOut' = reserveOut
 
-batcherUtxo =
-  ( TxIn (CApi.TxId "58cbd85ad2e69aefb0f48c66932932ab609b36068e5ad26991a0a86c8bfe5647") (TxIx 2),
-    CApi.TxOut batcher (TxOutValue MultiAssetInBabbageEra batcherValue) TxOutDatumNone ReferenceScriptNone --503000000 lovelace
-  )
-  where
-    licenseSymbol = parseStringToAssetId "2f2e0404310c106e2a260e8eb5a7e43f00cff42c667489d30e179816.2702028267"
+      amtOutNumerator = amountIn' * 997 * reserveOut'
+      amtOutDenominator = amountIn' * 997 + reserveIn' * 1000
 
-    batcherValue = valueFromList [(AdaAssetId, 503000000), (licenseSymbol, 1)]
+      priceImpactNumerator =
+        reserveOut' * amountIn' * amtOutDenominator * 997
+          - amtOutNumerator * reserveIn' * 1000
+      priceImpactDenominator =
+        reserveOut' * amountIn' * amtOutDenominator * 1000
 
-genSomeWalelt :: NetworkId -> Gen TxBuilder
-genSomeWalelt netid = do
-  vkeys <- Gen.list (Range.linear 2 5) (genVerificationKey AsPaymentKey)
-  userStake <- genStakeAddressReference
-  let addresses = [parseToAddressInEra "addr1qydzppfxwjnp8zqq5py65azlh07ydf8f72j2p6ptfzvh6uhee858y3kj7qmn3pvfdtfgqjmj99nnypx2eysgx3wpafdsjcs99a"]
-      genutxo :: Gen Value -> Gen (TxIn, TxOut ctx BabbageEra)
-      genutxo genVal = do
-        value <- genVal
-        txid <- genTxIn
-        address <- element addresses
-        pure (txid, TxOut address (TxOutValue MultiAssetInBabbageEra value) TxOutDatumNone ReferenceScriptNone)
-      genAdaVal :: Gen Value
-      genAdaVal = do
-        amount <- Gen.integral (Range.linear 2_000_000 3_000_000_000_000) <&> Quantity
-        pure $ valueFromList [(AdaAssetId, amount)]
-      genCollateralVal :: Gen Value
-      genCollateralVal = do
-        amount <- Gen.integral (Range.linear 5_000_000 10_000_000) <&> Quantity
-        pure $ valueFromList [(AdaAssetId, amount)]
-  utxos <- Gen.list (Range.linear 4 10) (genutxo genValueForTxOut)
-  adaUtxos <- Gen.list (Range.linear 4 10) (genutxo genAdaVal)
-  collateralUtxo <- genutxo genCollateralVal
-  pure $ txWalletUtxos (UTxO . Map.fromList $ collateralUtxo : utxos <> adaUtxos <> [batcherUtxo])
+      amountOut = amtOutNumerator `divide` amtOutDenominator
+      priceImpact =
+        let num = priceImpactNumerator * 100
+            denom = priceImpactDenominator
+         in num `divide` denom
+   in (amountOut, priceImpact)
 
 genStakeAddressReference :: GenT Identity StakeAddressReference
 genStakeAddressReference =
@@ -181,3 +178,24 @@ genPubkeyAddressShelley netid = do
     netid
     (PaymentCredentialByKey $ verificationKeyHash vKeyPayment)
     <$> genStakeCredential
+
+bbsToInteger :: BuiltinByteString -> Integer
+bbsToInteger input = go 0 0
+  where
+    len = lengthOfByteString input
+
+    go :: Integer -> Integer -> Integer
+    go idx acc
+      | idx == len = acc
+      | idx == 0 && byte == 45 = negate $ go (idx + 1) acc
+      | byte < 48 || byte > 48 + 9 = error "bbsToInteger failed"
+      | otherwise = go (idx + 1) (acc * 10 + (byte - 48))
+      where
+        byte = indexByteString input idx
+
+
+getTime = do
+  currentTime <- getCurrentTime
+  let oneHourLater = addUTCTime 3600 currentTime
+      posixTime = utcTimeToPOSIXSeconds oneHourLater
+  pure posixTime

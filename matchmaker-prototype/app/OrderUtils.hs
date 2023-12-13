@@ -37,16 +37,8 @@ import qualified Plutus.V1.Ledger.Api as PV1
 import qualified Plutus.V1.Ledger.Api as Plutus
 import Plutus.V1.Ledger.Value (AssetClass, CurrencySymbol (CurrencySymbol), TokenName (TokenName), Value, adaSymbol, adaToken, assetClass, assetClassValue)
 import PlutusTx.Prelude (BuiltinData, toBuiltin)
+import System.Directory
 import Types (OrderDatum (odStep), OrderMatcher (OrderMatcher), OrderStep (..), unDatumResponse)
-
-parseAddressFromString :: String -> AddressInEra BabbageEra
-parseAddressFromString str = case parseAddressBech32 $ T.pack str of
-  Just a -> a
-  Nothing -> error "Unexpected error while parsing address parsing address"
-
-orderContractAddress = parseAddressFromString "addr_test1wpn3aekk4atzzmfgwck2jh57nxtxv659gpx55n54f8m5qqc8wl0qd"
-
-orderContractAddressMainnet = parseAddressFromString "addr1zxn9efv2f6w82hagxqtn62ju4m293tqvw0uhmdl64ch8uw6j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pq6s3z70"
 
 orderAddressInfo :: MonadBlockfrost m => m [AddressUtxo]
 orderAddressInfo = do
@@ -65,7 +57,7 @@ generateOrderMatcher = do
                   DatumHash txt -> (mconcat $ amountToValue ams, datumHashToInlineDatumSync (T.unpack txt), txHashtoTxOut th n) : acc
           )
           []
-          addressUtxos          
+          addressUtxos
   let result =
         foldr
           ( \(va, bs, th) acc -> case getOrderDatum bs of
@@ -118,9 +110,11 @@ datumHashToInlineDatum dh = do
   manager <- newTlsManager
   let url = "https://cardano-mainnet.blockfrost.io/api/v0/scripts/datum/" ++ dh
   request <- HTTP.parseRequest url
-  let requestWithHeader = setRequestHeaders [("project_id", "mainnetL3IaaLMp0E1IUTODLZc9bZvhTg5CHDg4")] request
+  let requestWithHeader = setRequestHeaders [("project_id", token)] request
   response <- httpLbs requestWithHeader manager
   return $ HTTP.responseBody response
+  where
+    token = unsafePerformIO $ BS8.readFile $ unsafePerformIO getCurrentDirectory ++ "/secrets/" ++ "blockfrost.mainnet.token"
 
 datumHashToInlineDatumSync :: String -> BL.ByteString
 datumHashToInlineDatumSync dh =

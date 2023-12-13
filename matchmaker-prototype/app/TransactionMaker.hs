@@ -10,14 +10,16 @@ import Cardano.Api.Shelley (ReferenceScript (..), ReferenceTxInsScriptsInlineDat
 import Cardano.Binary
 import Cardano.Kuber.Api
 import Cardano.Kuber.Util
+import Control.Monad.IO.Class
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy.Char8 as BSL8
 import Data.Either (fromRight)
 import Data.Functor.Identity
 import Data.Int (Int64)
 import Data.List (nub)
+import qualified Data.Map as Map
 import Data.Maybe
-import Data.Maybe (fromJust)
+import qualified Data.Set as Set
 import Data.Text
 import qualified Data.Text as T
 import Data.Time
@@ -26,33 +28,15 @@ import qualified Debug.Trace as Debug
 import GeneralUtils
 import Hedgehog
 import Hedgehog.Gen
+import OrderUtils
 import Plutus.V1.Ledger.Api
-import Plutus.V1.Ledger.Value (assetClass, assetClassValueOf, flattenValue)
+import Plutus.V1.Ledger.Interval (after)
+import Plutus.V1.Ledger.Value (AssetClass (AssetClass), assetClass, assetClassValueOf, flattenValue)
 import PlutusTx.Builtins (emptyByteString, sha2_256)
 import PlutusTx.Prelude (consByteString, divide, quotient, remainder)
 import Types
 
-minusAsciiCode :: Integer
-minusAsciiCode = 45
-
-zeroAsciiCode :: Integer
-zeroAsciiCode = 48
-
-integerToBS :: Integer -> BuiltinByteString
-integerToBS x
-  | x < 0 = consByteString minusAsciiCode $ integerToBS (negate x)
-  -- x is single-digit
-  | x `quotient` 10 == 0 = digitToBS x
-  | otherwise = integerToBS (x `quotient` 10) <> digitToBS (x `remainder` 10)
-  where
-    digitToBS :: Integer -> BuiltinByteString
-    digitToBS d = consByteString (d + zeroAsciiCode) emptyByteString
-
-mkNFTTokenName :: TxOutRef -> TokenName
-mkNFTTokenName (TxOutRef refHash refIdx) = tokenName
-  where
-    tokenName :: TokenName
-    tokenName = TokenName $ sha2_256 $ Plutus.V1.Ledger.Api.getTxId refHash <> integerToBS refIdx
+batcher = parseToAddressInEra "addr1qx7tzh4qen0p50ntefz8yujwgqt7zulef6t6vrf7dq4xa82j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pqrkj6fh"
 
 poolContractAddress = parseToAddressInEra "addr1z8snz7c4974vzdpxu65ruphl3zjdvtxw8strf2c2tmqnxz2j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pq0xmsha"
 
@@ -70,59 +54,140 @@ poolScript = eitherScript (addrInEraToPlutusAddress poolContractAddress)
 orderScript :: (MonadBlockfrost m, MonadFail m) => m (CApi.Script PlutusScriptV1)
 orderScript = eitherScript (addrInEraToPlutusAddress orderContractAddress)
 
-getAmountOut :: Integer -> Integer -> Integer -> Integer
-getAmountOut reserveA reserveB inA =
-  let inAWithFee = inA * 997
-      numerator = inAWithFee * reserveB
-      denominator = reserveA * 1000 + inAWithFee
-      outB = numerator `divide` denominator
-   in outB
+batcherTokenPolicyId = case parseStringToAssetId
+  "2f2e0404310c106e2a260e8eb5a7e43f00cff42c667489d30e179816.POSIXTime" of
+  AdaAssetId -> error "IMPOSSIBLE"
+  AssetId pi an -> pi
 
-makeSeiTx :: OrderMatcher -> CApi.Script PlutusScriptV1 -> PoolMatches -> CApi.Script PlutusScriptV1 -> GenT Identity TxBuilder
-makeSeiTx order orderScript pool poolScript = do
-  wallet <- genSomeWalelt Mainnet
-  let receiver = plutusAddrToBabbage Mainnet (odReceiver $ omOrderDatum order)
+getBatcherUtxo time = do
+  (UTxO utxoMap) <- kQueryUtxoByAddress (Set.singleton $ addressInEraToAddressAny batcher)
+  let utxoLists = Map.toList utxoMap
+      utxoWithToken =
+        Data.Maybe.mapMaybe
+          ( \(ti, to) -> case to of
+              CApi.TxOut aie tov tod rs -> case tov of
+                TxOutAdaOnly oasie lo -> Nothing
+                TxOutValue masie va ->
+                  Just $
+                    Data.Maybe.mapMaybe
+                      ( \(ai, quan) -> case ai of
+                          AdaAssetId -> Nothing
+                          AssetId pi an ->
+                            if (pi == batcherTokenPolicyId)
+                              && (case ti of TxIn _ (TxIx wrd) -> toInteger wrd <= 2)
+                              && (bbsToInteger (toBuiltin (serialiseToRawBytesHex an))) > time
+                              then Just (UTxO $ Map.fromList [(ti, to)])
+                              else Nothing
+                      )
+                      (valueToList va)
+          )
+          utxoLists
+  if Prelude.null utxoWithToken
+    then error "Batcher is broke"
+    else
+      if Prelude.null (Prelude.head utxoWithToken)
+        then error "Batcher has no tokens."
+        else pure $ Prelude.head (Prelude.head utxoWithToken)
+
+getbatcherUtxo' :: (HasChainQueryAPI api, HasKuberAPI api) => Kontract api w FrameworkError (UTxO BabbageEra)
+getbatcherUtxo' = do
+  posix <- liftIO time
+  getBatcherUtxo 1602627200000
+  -- getBatcherUtxo posix
+  where
+    time = do
+      getTime
+
+makeSeiTx order orderScript pool poolScript time batcherUtxo = do
+  let -- Setting up variables for calculations
       desiredAssetClass = plutusAssetClassToAssetId $ seiDesiredCoin $ odStep $ omOrderDatum order
+
+      (coinIn, reserveIn, reserveOut) =
+        if pdCoinA (pmmDatum pool) /= fst (pmmDesired pool)
+          then (pdCoinA (pmmDatum pool), snd (pmmOffered pool), snd (pmmDesired pool))
+          else (pdCoinB (pmmDatum pool), snd (pmmOffered pool), snd (pmmDesired pool))
+
+      coinInAmount = assetClassValueOf (omOfferedAmount order) coinIn
+
       amountIn =
-        assetClassValueOf (omOfferedAmount order) (fst $ pmmOffered pool)
-          - (odBatcherFee (omOrderDatum order) + odOutputADA (omOrderDatum order))
-      amountOut = getAmountOut (snd $ pmmOffered pool) (snd $ pmmDesired pool) amountIn
-  let payReceiver = valueFromList [(desiredAssetClass, Quantity amountOut), (AdaAssetId, Quantity (odOutputADA $ omOrderDatum order))]
-      coinAOutput = pdCoinA $ pmmDatum pool
-      poolValue = pmmValue pool
-      lpTokenInPool = lpTokenCurrencySymbol `valueIn` poolValue
-      factoryTokenInPool = valueFromList [(factoryTokenAssetId, 1)]
-      poolNftInPool = poolNFTCurrencySymbol `valueIn` poolValue
-      payPool = calculatePoolOutput pool amountOut amountIn <> lpTokenInPool <> factoryTokenInPool <> poolNftInPool
-      poolDatum = dataToScriptData $ pmmDatum pool
+        if coinIn == assetClass adaSymbol adaToken
+          then
+            coinInAmount
+              - (odBatcherFee (omOrderDatum order) + odOutputADA (omOrderDatum order))
+          else coinInAmount
+
+      amountOut = getAmountOut reserveIn reserveOut amountIn
+
+      -- Pay Receiver Calculations
+      receiver = plutusAddrToBabbage Mainnet (odReceiver $ omOrderDatum order)
+
+      (desiredCoinAmountOut, mAdaAmountOut)
+        | fst (pmmDesired pool) == assetClass adaSymbol adaToken = (amountOut + odOutputADA (omOrderDatum order), Nothing)
+        | otherwise = (amountOut, Just (odOutputADA (omOrderDatum order)))
+
+      payReceiverDesiredCoin = valueFromList [(desiredAssetClass, Quantity desiredCoinAmountOut)]
+
+      payReceiverAda = case mAdaAmountOut of
+        Nothing -> mempty
+        Just n -> valueFromList [(AdaAssetId, Quantity n)]
+
+      -- Pay Batcher Calculations
       batcherPkh = case addrInEraToPkh batcher of
         Just a -> a
         _ -> error "Batcher address does not have a pubKey."
-      poolRedeemer = dataToScriptData $ ApplyPool (addrInEraToPlutusAddress batcher) 2
+
+      payBatcher = case batcherUtxo of
+        (ti, to) -> case to of
+          CApi.TxOut aie tov tod rs -> case tov of
+            TxOutAdaOnly oasie lo -> error "bater should have token"
+            TxOutValue masie va -> va <> valueFromList [(AdaAssetId, Quantity (odBatcherFee $omOrderDatum order))]
+
+      batcherIndex = case batcherUtxo of (ti, to) -> case ti of TxIn ti' ti3 -> case ti3 of TxIx wo -> toInteger wo
+      -- pay Pool Calculations
+
+      poolValue = pmmValue pool
+
+      lpTokenInPool = lpTokenCurrencySymbol `valueIn` poolValue
+
+      factoryTokenInPool = valueFromList [(factoryTokenAssetId, 1)]
+
+      poolNftInPool = poolNFTCurrencySymbol `valueIn` poolValue
+
+      payPool = calculatePoolOutput pool amountOut amountIn <> lpTokenInPool <> factoryTokenInPool <> poolNftInPool
+
+      poolDatum = dataToScriptData $ pmmDatum pool
+
+      poolRedeemer = dataToScriptData $ ApplyPool (addrInEraToPlutusAddress batcher) batcherIndex
+
       orderRedeemer = dataToScriptData ApplyOrder
-      poolNFTUtxo =
+
+      poolUtxo =
         ( parseTxIn (pmmDesiredUtxo pool),
           toCtxUTxOTxOut $ CApi.TxOut poolContractAddress (TxOutValue MultiAssetInBabbageEra (fromPlutusValue poolValue)) (TxOutDatumInTx ScriptDataInBabbageEra (dataToScriptData $ pmmDatum pool)) ReferenceScriptNone
         )
+
       orderUtxo =
         ( parseTxIn (omOrderUtxo order),
           toCtxUTxOTxOut $ CApi.TxOut orderContractAddress (TxOutValue MultiAssetInBabbageEra (fromPlutusValue (omOfferedAmount order))) (TxOutDatumInTx ScriptDataInBabbageEra (dataToScriptData $ omOrderDatum order)) ReferenceScriptNone
         )
+
       txb =
-        txPayTo receiver payReceiver
-          <> txPayTo batcher (valueFromList [(AdaAssetId, Quantity (odBatcherFee $ omOrderDatum order))])
+        txPayTo receiver (payReceiverDesiredCoin <> payReceiverAda)
+          <> txPayTo batcher payBatcher
           <> txPayToScriptWithDataInTx poolContractAddress payPool poolDatum
-          <> uncurry txRedeemUtxoWithDatum poolNFTUtxo poolScript poolDatum poolRedeemer Nothing
+          <> uncurry txRedeemUtxoWithDatum poolUtxo poolScript poolDatum poolRedeemer Nothing
           <> uncurry txRedeemUtxoWithDatum orderUtxo orderScript (dataToScriptData $ omOrderDatum order) orderRedeemer Nothing
-          <> uncurry txConsumeUtxo batcherUtxo
           <> txSignByPkh batcherPkh
-          <> wallet
+          <> txValidUntilPosixTime time
+          <> txWalletAddress batcher
   pure txb
 
 calculatePoolOutput pool amountOut amountIn =
-  let offeredCoin = plutusAssetClassToAssetId $ fst $ pmmOffered pool
-      desiredCoin = plutusAssetClassToAssetId $ fst $ pmmDesired pool
+  let coinA = plutusAssetClassToAssetId $ pdCoinA (pmmDatum pool)
+      coinB = plutusAssetClassToAssetId $ pdCoinB (pmmDatum pool)
       desiredCoinAmountInPool = snd $ pmmDesired pool
       offeredCoinAmountInPool = snd $ pmmOffered pool
-      val = valueFromList [(desiredCoin, Quantity desiredCoinAmountInPool - Quantity amountOut), (offeredCoin, Quantity offeredCoinAmountInPool + Quantity amountIn)]
+      coinA_afterSwap = if pdCoinA (pmmDatum pool) /= fst (pmmDesired pool) then offeredCoinAmountInPool + amountIn else offeredCoinAmountInPool - amountOut
+      coinB_AfterSwap = if pdCoinA (pmmDatum pool) /= fst (pmmDesired pool) then desiredCoinAmountInPool - amountOut else desiredCoinAmountInPool + amountIn
+      val = valueFromList [(coinA, Quantity coinA_afterSwap), (coinB, Quantity coinB_AfterSwap)]
    in val
